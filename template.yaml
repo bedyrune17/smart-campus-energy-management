@@ -39,7 +39,6 @@ Globals:
   Function:
     Runtime: python3.12
     Architectures: [arm64]
-    CodeUri: backend/src/
     MemorySize: 256
     Timeout: 30
     Environment:
@@ -160,6 +159,7 @@ Resources:
     Properties:
       Description: Validate readings, detect abnormal usage, store, alert
       Handler: handlers.ingest.handler
+      CodeUri: backend/src/
       LoggingConfig: { LogGroup: !Ref IngestLogGroup }
       Environment:
         Variables:
@@ -189,6 +189,7 @@ Resources:
     Properties:
       Description: Dashboard REST API (summary, rooms, history, alerts, forecasts, reports)
       Handler: handlers.api.handler
+      CodeUri: backend/src/
       LoggingConfig: { LogGroup: !Ref ApiLogGroup }
       Policies:
         - DynamoDBReadPolicy: { TableName: !Ref ReadingsTable }
@@ -209,6 +210,7 @@ Resources:
     Properties:
       Description: Virtual smart meters for every room (scheduled) + history backfill + anomaly injection
       Handler: handlers.simulator.handler
+      CodeUri: backend/src/
       MemorySize: 512
       Timeout: 300
       LoggingConfig: { LogGroup: !Ref SimulatorLogGroup }
@@ -232,6 +234,7 @@ Resources:
     Properties:
       Description: Hourly Holt-Winters demand forecast per building and campus
       Handler: handlers.forecast.handler
+      CodeUri: backend/src/
       Timeout: 60
       LoggingConfig: { LogGroup: !Ref ForecastLogGroup }
       Policies:
