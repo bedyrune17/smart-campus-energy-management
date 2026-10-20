@@ -3,7 +3,7 @@
 // You can also open the dashboard with ?api=https://xxxx.execute-api.<region>.amazonaws.com
 // (remembered in this browser) without editing this file.
 window.SCE_CONFIG = {
-  apiBaseUrl: "",
+  apiBaseUrl: "https://j0cv2wlq1b.execute-api.ap-southeast-2.amazonaws.com",
   refreshSeconds: 30,
   repoUrl: "https://github.com/bedyrune17/smart-campus-energy-management",
 };
