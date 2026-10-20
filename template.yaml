@@ -1,0 +1,294 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  Cloud-Based Smart Campus Energy Management System - IoT ingestion (HTTP + AWS IoT Core),
+  anomaly detection, demand forecasting and SNS alerts on a fully serverless AWS stack.
+
+Parameters:
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: Optional e-mail for high-severity alerts (AWS sends a confirmation link first).
+  SimulatorEnabled:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: Run the cloud sensor simulator every 5 minutes. Set false once real ESP32 meters are connected.
+  TariffPerKwh:
+    Type: Number
+    Default: 8
+    Description: Electricity tariff per kWh (used for cost estimates).
+  Currency:
+    Type: String
+    Default: INR
+  NotifyMinSeverity:
+    Type: String
+    AllowedValues: [low, medium, high, critical]
+    Default: high
+    Description: Minimum alert severity that is pushed to SNS (all alerts are always stored and shown on the dashboard).
+  DashboardUrl:
+    Type: String
+    Default: ""
+    Description: Optional dashboard link included in alert e-mails.
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
+  SimulatorOn: !Equals [!Ref SimulatorEnabled, "true"]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [arm64]
+    CodeUri: backend/src/
+    MemorySize: 256
+    Timeout: 30
+    Environment:
+      Variables:
+        READINGS_TABLE: !Ref ReadingsTable
+        ROOMS_TABLE: !Ref RoomsTable
+        HOURLY_TABLE: !Ref HourlyTable
+        ALERTS_TABLE: !Ref AlertsTable
+        FORECAST_TABLE: !Ref ForecastTable
+        ALERT_TOPIC_ARN: !Ref AlertTopic
+        TARIFF_PER_KWH: !Ref TariffPerKwh
+        CURRENCY: !Ref Currency
+        NOTIFY_MIN_SEVERITY: !Ref NotifyMinSeverity
+        DASHBOARD_URL: !Ref DashboardUrl
+        CAMPUS_UTC_OFFSET_MINUTES: "330"
+        READING_INTERVAL_S: "300"
+
+Resources:
+  # ---------------------------------------------------------------- storage
+  ReadingsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: room_id, AttributeType: S }
+        - { AttributeName: ts, AttributeType: N }
+      KeySchema:
+        - { AttributeName: room_id, KeyType: HASH }
+        - { AttributeName: ts, KeyType: RANGE }
+      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }
+
+  RoomsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: room_id, AttributeType: S }
+      KeySchema:
+        - { AttributeName: room_id, KeyType: HASH }
+
+  HourlyTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: scope, AttributeType: S }
+        - { AttributeName: hour, AttributeType: N }
+      KeySchema:
+        - { AttributeName: scope, KeyType: HASH }
+        - { AttributeName: hour, KeyType: RANGE }
+      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }
+
+  AlertsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: day, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: day, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+      TimeToLiveSpecification: { AttributeName: expires_at, Enabled: true }
+
+  ForecastTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: scope, AttributeType: S }
+      KeySchema:
+        - { AttributeName: scope, KeyType: HASH }
+
+  # ---------------------------------------------------------------- alerts
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Campus Energy Alerts
+
+  AlertEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # ---------------------------------------------------------------- API
+  CampusApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Description: Smart Campus Energy REST API
+      CorsConfiguration:
+        AllowOrigins: ["*"]
+        AllowMethods: [GET, POST, OPTIONS]
+        AllowHeaders: [content-type, x-device-key]
+        MaxAge: 600
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 50
+        ThrottlingRateLimit: 20
+
+  # ---------------------------------------------------------------- compute
+  IngestLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { RetentionInDays: 14 }
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { RetentionInDays: 14 }
+  SimulatorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { RetentionInDays: 14 }
+  ForecastLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { RetentionInDays: 14 }
+
+  IngestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Validate readings, detect abnormal usage, store, alert
+      Handler: handlers.ingest.handler
+      LoggingConfig: { LogGroup: !Ref IngestLogGroup }
+      Environment:
+        Variables:
+          # Unique per stack, never exposed publicly - read it from the stack outputs.
+          DEVICE_API_KEY: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref ReadingsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref RoomsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref HourlyTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref AlertsTable }
+        - SNSPublishMessagePolicy: { TopicName: !GetAtt AlertTopic.TopicName }
+      Events:
+        HttpIngest:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CampusApi
+            Method: POST
+            Path: /readings
+        IotIngest:
+          Type: IoTRule
+          Properties:
+            AwsIotSqlVersion: "2016-03-23"
+            Sql: "SELECT *, topic(3) AS device_id FROM 'campus/energy/+/readings'"
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Dashboard REST API (summary, rooms, history, alerts, forecasts, reports)
+      Handler: handlers.api.handler
+      LoggingConfig: { LogGroup: !Ref ApiLogGroup }
+      Policies:
+        - DynamoDBReadPolicy: { TableName: !Ref ReadingsTable }
+        - DynamoDBReadPolicy: { TableName: !Ref RoomsTable }
+        - DynamoDBReadPolicy: { TableName: !Ref HourlyTable }
+        - DynamoDBReadPolicy: { TableName: !Ref AlertsTable }
+        - DynamoDBReadPolicy: { TableName: !Ref ForecastTable }
+      Events:
+        Root:
+          Type: HttpApi
+          Properties: { ApiId: !Ref CampusApi, Method: GET, Path: / }
+        Proxy:
+          Type: HttpApi
+          Properties: { ApiId: !Ref CampusApi, Method: GET, Path: "/{proxy+}" }
+
+  SimulatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Virtual smart meters for every room (scheduled) + history backfill + anomaly injection
+      Handler: handlers.simulator.handler
+      MemorySize: 512
+      Timeout: 300
+      LoggingConfig: { LogGroup: !Ref SimulatorLogGroup }
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref ReadingsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref RoomsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref HourlyTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref AlertsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref ForecastTable }
+        - SNSPublishMessagePolicy: { TopicName: !GetAtt AlertTopic.TopicName }
+      Events:
+        Every5Minutes:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Input: '{"mode": "live"}'
+            State: !If [SimulatorOn, ENABLED, DISABLED]
+
+  ForecastFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Hourly Holt-Winters demand forecast per building and campus
+      Handler: handlers.forecast.handler
+      Timeout: 60
+      LoggingConfig: { LogGroup: !Ref ForecastLogGroup }
+      Policies:
+        - DynamoDBReadPolicy: { TableName: !Ref HourlyTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref ForecastTable }
+      Events:
+        Hourly:
+          Type: Schedule
+          Properties:
+            Schedule: cron(2 * * * ? *)
+
+  # ---------------------------------------------------------------- monitoring
+  IngestErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Smart Campus ingest Lambda is throwing errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref IngestFunction }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+
+  SimulatorErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Smart Campus simulator Lambda is throwing errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref SimulatorFunction }]
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 2
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+
+Outputs:
+  ApiUrl:
+    Description: Base URL of the REST API (paste into the dashboard)
+    Value: !Sub "https://${CampusApi}.execute-api.${AWS::Region}.amazonaws.com"
+  DeviceApiKey:
+    Description: Value for the x-device-key header used by the Python simulator / ESP32
+    Value: !Select [2, !Split ["/", !Ref "AWS::StackId"]]
+  IotTopic:
+    Description: MQTT topic pattern for AWS IoT Core devices
+    Value: campus/energy/<room_id>/readings
+  AlertTopicArn:
+    Value: !Ref AlertTopic
+  IngestFunctionName:
+    Value: !Ref IngestFunction
+  SimulatorFunctionName:
+    Value: !Ref SimulatorFunction
+  ForecastFunctionName:
+    Value: !Ref ForecastFunction

@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Deployment artefacts
+.packaged.yaml
+.aws-sam/
+samconfig.toml
+
+# Secrets - never commit device certificates, keys or Wi-Fi credentials
+iot/certs/
+hardware/**/secrets.h
+*.pem
+*.pem.key
+*.pem.crt
+.env
+
+# Editors / OS / local tooling
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db
+desktop.ini

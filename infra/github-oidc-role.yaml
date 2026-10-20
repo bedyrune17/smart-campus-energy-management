@@ -1,0 +1,120 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  OPTIONAL - IAM role that lets GitHub Actions (.github/workflows/deploy-aws.yml) deploy the
+  Smart Campus Energy stack using OpenID Connect, so no long-lived AWS keys are stored in GitHub.
+  Deploy once:  aws cloudformation deploy --template-file infra/github-oidc-role.yaml
+                  --stack-name smart-campus-github-deployer --capabilities CAPABILITY_NAMED_IAM
+
+Parameters:
+  GitHubRepository:
+    Type: String
+    Default: bedyrune17/smart-campus-energy-management
+    Description: owner/repo allowed to assume the role
+  Branch:
+    Type: String
+    Default: main
+  AppStackName:
+    Type: String
+    Default: smart-campus-energy
+  CreateOidcProvider:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: Set false if this account already has the token.actions.githubusercontent.com provider
+
+Conditions:
+  CreateProvider: !Equals [!Ref CreateOidcProvider, "true"]
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppStackName}-github-deployer"
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateProvider
+                - !Ref GitHubOidcProvider
+                - !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepository}:ref:refs/heads/${Branch}"
+      Policies:
+        - PolicyName: deploy-smart-campus-stack
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CloudFormationOnAppStack
+                Effect: Allow
+                Action: cloudformation:*
+                Resource:
+                  - !Sub "arn:aws:cloudformation:*:${AWS::AccountId}:stack/${AppStackName}/*"
+                  - "arn:aws:cloudformation:*:aws:transform/Serverless-2016-10-31"
+              - Sid: CloudFormationRead
+                Effect: Allow
+                Action: [cloudformation:ValidateTemplate, cloudformation:ListStacks, cloudformation:GetTemplateSummary]
+                Resource: "*"
+              - Sid: ArtifactBucket
+                Effect: Allow
+                Action: [s3:CreateBucket, s3:PutBucketPublicAccessBlock, s3:ListBucket, s3:GetObject, s3:PutObject, s3:GetBucketLocation]
+                Resource:
+                  - !Sub "arn:aws:s3:::smart-campus-artifacts-${AWS::AccountId}-*"
+                  - !Sub "arn:aws:s3:::smart-campus-artifacts-${AWS::AccountId}-*/*"
+              - Sid: AppServices
+                Effect: Allow
+                Action:
+                  - lambda:*
+                  - dynamodb:*
+                  - apigateway:*
+                  - sns:*
+                  - events:*
+                  - logs:*
+                  - cloudwatch:*
+                  - iot:CreateTopicRule
+                  - iot:ReplaceTopicRule
+                  - iot:DeleteTopicRule
+                  - iot:GetTopicRule
+                  - iot:DescribeEndpoint
+                  - iot:TagResource
+                  - iot:ListTagsForResource
+                Resource: "*"
+              - Sid: StackRolesOnly
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:PassRole
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${AppStackName}-*"
+              - Sid: Identity
+                Effect: Allow
+                Action: sts:GetCallerIdentity
+                Resource: "*"
+
+Outputs:
+  RoleArn:
+    Description: Put this in the GitHub repository variable AWS_DEPLOY_ROLE_ARN
+    Value: !GetAtt DeployRole.Arn

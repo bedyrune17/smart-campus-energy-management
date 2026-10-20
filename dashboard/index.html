@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Smart Campus Energy</title>
+  <meta name="description" content="Cloud-based smart campus energy management: live consumption, abnormal-usage alerts and demand forecasts on AWS.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%232a78d6' d='M13 2 4 14h6l-1 8 9-12h-6z'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="config.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg>
+      <div>
+        <h1>Smart Campus Energy</h1>
+        <p class="subtitle">Monitoring, abnormal-usage detection and demand forecasting on AWS</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <span id="mode-badge" class="badge">Connecting…</span>
+      <span id="updated" class="muted small"></span>
+      <button id="refresh-btn" class="btn" type="button" title="Refresh now">Refresh</button>
+      <button id="settings-btn" class="btn" type="button">Data source</button>
+    </div>
+  </header>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <main>
+    <nav class="filters" aria-label="Filters">
+      <div class="segmented" role="group" aria-label="Building" id="scope-filter"></div>
+      <div class="segmented" role="group" aria-label="History range" id="range-filter">
+        <button type="button" data-range="24">24 h</button>
+        <button type="button" data-range="48" aria-pressed="true">48 h</button>
+        <button type="button" data-range="168">7 days</button>
+      </div>
+    </nav>
+
+    <section class="kpis" aria-label="Key figures">
+      <article class="tile hero-tile">
+        <h2 class="tile-label">Live demand</h2>
+        <p class="hero-value" id="kpi-power">–</p>
+        <p class="tile-sub" id="kpi-power-sub"></p>
+      </article>
+      <article class="tile">
+        <h2 class="tile-label">Energy today</h2>
+        <p class="tile-value" id="kpi-energy">–</p>
+        <p class="tile-sub" id="kpi-energy-sub"></p>
+      </article>
+      <article class="tile">
+        <h2 class="tile-label">Cost today</h2>
+        <p class="tile-value" id="kpi-cost">–</p>
+        <p class="tile-sub" id="kpi-cost-sub"></p>
+      </article>
+      <article class="tile">
+        <h2 class="tile-label">Wasted today</h2>
+        <p class="tile-value" id="kpi-waste">–</p>
+        <p class="tile-sub" id="kpi-waste-sub"></p>
+      </article>
+      <article class="tile">
+        <h2 class="tile-label">Forecast, next 24 h</h2>
+        <p class="tile-value" id="kpi-forecast">–</p>
+        <p class="tile-sub" id="kpi-forecast-sub"></p>
+      </article>
+      <article class="tile">
+        <h2 class="tile-label">Alerts, last 24 h</h2>
+        <p class="tile-value" id="kpi-alerts">–</p>
+        <p class="tile-sub" id="kpi-alerts-sub"></p>
+      </article>
+    </section>
+
+    <section class="grid two-one">
+      <article class="card">
+        <header class="card-head">
+          <div>
+            <h2 id="load-title">Campus demand: actual vs forecast</h2>
+            <p class="card-sub" id="load-sub">Hourly energy (kWh per hour = average kW). Forecast: Holt-Winters model refreshed hourly.</p>
+          </div>
+          <button class="btn ghost table-toggle" type="button" data-target="load">Table</button>
+        </header>
+        <div class="chart-box tall"><canvas id="load-chart" role="img" aria-label="Hourly energy, actual and forecast"></canvas></div>
+        <div class="table-view" id="load-table" hidden></div>
+      </article>
+
+      <article class="card">
+        <header class="card-head">
+          <div>
+            <h2>Alerts</h2>
+            <p class="card-sub">Abnormal usage detected in the last 24 h, newest first</p>
+          </div>
+        </header>
+        <ol class="alerts" id="alerts-list"></ol>
+      </article>
+    </section>
+
+    <section class="grid halves">
+      <article class="card">
+        <header class="card-head">
+          <div>
+            <h2>Daily energy by building</h2>
+            <p class="card-sub">Last 7 days, kWh (today is partial)</p>
+          </div>
+          <button class="btn ghost table-toggle" type="button" data-target="daily">Table</button>
+        </header>
+        <div class="chart-box"><canvas id="daily-chart" role="img" aria-label="Daily energy per building, stacked"></canvas></div>
+        <div class="table-view" id="daily-table" hidden></div>
+      </article>
+
+      <article class="card">
+        <header class="card-head">
+          <div>
+            <h2>Buildings now</h2>
+            <p class="card-sub">Live load, today's energy and avoidable waste</p>
+          </div>
+        </header>
+        <div class="table-wrap"><table class="data" id="buildings-table"></table></div>
+      </article>
+    </section>
+
+    <section class="card">
+      <header class="card-head">
+        <div>
+          <h2>Rooms</h2>
+          <p class="card-sub">Select a room for its last 6 hours. Status comes from the anomaly engine.</p>
+        </div>
+        <ul class="legend status-legend" id="status-legend"></ul>
+      </header>
+      <div id="rooms-grid" class="rooms"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>
+      <strong>Architecture:</strong> ESP32 / Python simulator → AWS IoT Core &amp; API Gateway → Lambda (validation, anomaly detection) →
+      DynamoDB → Lambda (Holt-Winters forecast, EventBridge hourly) → SNS alerts · CloudWatch alarms · dashboard on GitHub Pages.
+    </p>
+    <p><a id="repo-link" href="#">Source code on GitHub</a></p>
+  </footer>
+
+  <dialog id="room-dialog" class="dialog">
+    <form method="dialog" class="dialog-head">
+      <div>
+        <h2 id="room-title">Room</h2>
+        <p class="card-sub" id="room-sub"></p>
+      </div>
+      <button class="btn" value="close" aria-label="Close">Close</button>
+    </form>
+    <div class="room-stats" id="room-stats"></div>
+    <h3 class="chart-title">Power, kW</h3>
+    <div class="chart-box"><canvas id="room-power-chart" role="img" aria-label="Room power over the last 6 hours"></canvas></div>
+    <h3 class="chart-title">People present</h3>
+    <div class="chart-box short"><canvas id="room-occ-chart" role="img" aria-label="Room occupancy over the last 6 hours"></canvas></div>
+  </dialog>
+
+  <dialog id="settings-dialog" class="dialog narrow">
+    <form method="dialog" id="settings-form">
+      <h2>Data source</h2>
+      <p class="card-sub">Paste the <code>ApiUrl</code> printed by <code>deploy.sh</code>. Leave empty to use the bundled demo snapshot.</p>
+      <label for="api-input" class="field-label">API base URL</label>
+      <input id="api-input" type="url" placeholder="https://xxxx.execute-api.ap-south-1.amazonaws.com" autocomplete="off">
+      <div class="dialog-actions">
+        <button class="btn" value="demo" type="submit">Use demo data</button>
+        <button class="btn primary" value="save" type="submit">Connect</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="tooltip-live" class="sr-only" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

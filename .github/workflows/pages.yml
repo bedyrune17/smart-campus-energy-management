@@ -1,0 +1,45 @@
+name: Dashboard (GitHub Pages)
+
+on:
+  push:
+    branches: [main]
+    paths: ["dashboard/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      # Optional: set the repository variable API_BASE_URL (Settings > Secrets and variables > Actions > Variables)
+      # to the ApiUrl printed by deploy.sh and the published dashboard connects to AWS automatically.
+      - name: Inject API URL
+        if: ${{ vars.API_BASE_URL != '' }}
+        env:
+          API_BASE_URL: ${{ vars.API_BASE_URL }}
+        run: |
+          python3 - <<'EOF'
+          import os, pathlib, re
+          url = os.environ["API_BASE_URL"].strip().rstrip("/")
+          assert re.fullmatch(r"https://[A-Za-z0-9.\-]+(/[A-Za-z0-9._\-/]*)?", url), "API_BASE_URL must be an https URL"
+          p = pathlib.Path("dashboard/config.js")
+          p.write_text(re.sub(r'apiBaseUrl: "[^"]*"', f'apiBaseUrl: "{url}"', p.read_text()))
+          EOF
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dashboard
+      - id: deployment
+        uses: actions/deploy-pages@v4

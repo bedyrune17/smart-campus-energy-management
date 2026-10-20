@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install test tools
+        run: pip install -r requirements-dev.txt
+      - name: Unit + integration tests (DynamoDB mocked with moto)
+        run: pytest -q
+      - name: Lint CloudFormation / SAM templates
+        run: cfn-lint template.yaml infra/github-oidc-role.yaml
+      - name: Simulator smoke test
+        run: python simulator/simulate.py --dry-run --once --rooms AB1-101,LAB-CS1
